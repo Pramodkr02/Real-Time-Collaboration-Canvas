@@ -22,6 +22,8 @@ export default function Login({ onSubmit }) {
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
+            // For demo purposes, accept any email/password combination
+            // In production, this should validate with the server
             const username = email?.split("@")[0] || "guest";
             onSubmit(username);
           }}

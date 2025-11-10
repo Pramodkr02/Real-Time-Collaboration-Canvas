@@ -184,6 +184,188 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
     });
   }, [paintAll]);
 
+  const emitThrottled = useRef(0);
+
+  function handlePoint(x, y, isStart = false, isEnd = false) {
+    // Only used for brush/eraser
+    const payload = { x, y, color, width: size, tool };
+    if (isStart) {
+      strokeIdRef.current = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      emit("start_stroke", payload);
+      liveStrokeRef.current = { tool, color, width: size, path: [{ x, y }] };
+      outBufferRef.current = [];
+    } else {
+      outBufferRef.current.push({ x, y });
+      const now = Date.now();
+      if (now - emitThrottled.current >= THROTTLE_MS || isEnd) {
+        emitThrottled.current = now;
+        const chunk = outBufferRef.current.splice(0, outBufferRef.current.length);
+        if (chunk.length) {
+          emit("draw_stroke", { pathChunk: chunk, color, width: size, tool });
+        }
+      }
+      if (liveStrokeRef.current) liveStrokeRef.current.path.push({ x, y });
+    }
+    if (isEnd) {
+      emit("end_stroke", { strokeId: strokeIdRef.current });
+      if (liveStrokeRef.current) {
+        historyRef.current.push({
+          opId: `${Date.now()}`,
+          userId: "self",
+          type: "stroke",
+          data: liveStrokeRef.current,
+          timestamp: Date.now(),
+        });
+        liveStrokeRef.current = null;
+      }
+    }
+  }
+
+  const onMouse = useCallback(
+    (e) => {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      if (e.type === "mousedown") {
+        drawingRef.current = true;
+        if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) {
+          handlePoint(x, y, true, false);
+        } else if (tool === TOOLS.LINE) {
+          previewOpRef.current = { type: 'line', data: { color, width: size, x1: x, y1: y, x2: x, y2: y } };
+        } else if (tool === TOOLS.RECT) {
+          previewOpRef.current = { type: 'rect', data: { color, width: size, x, y, w: 0, h: 0 } };
+        } else if (tool === TOOLS.CIRCLE) {
+          previewOpRef.current = { type: 'circle', data: { color, width: size, cx: x, cy: y, r: 0 } };
+        } else if (tool === TOOLS.TEXT) {
+          const text = prompt('Enter text');
+          if (text && text.trim()) {
+            const op = { type: 'text', data: { text: text.trim(), x, y, color, size } };
+            emit('commit_op', op);
+            try {
+              historyRef.current.push({ opId: `${Date.now()}`, userId: 'self', type: op.type, data: op.data, timestamp: Date.now() });
+              scheduleRepaint();
+            } catch {}
+          }
+        }
+      } else if (e.type === "mousemove") {
+        trackCursor(x, y);
+        if (drawingRef.current) {
+          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, false);
+          else if (tool === TOOLS.LINE && previewOpRef.current) { previewOpRef.current.data.x2 = x; previewOpRef.current.data.y2 = y; }
+          else if (tool === TOOLS.RECT && previewOpRef.current) { previewOpRef.current.data.w = x - previewOpRef.current.data.x; previewOpRef.current.data.h = y - previewOpRef.current.data.y; }
+          else if (tool === TOOLS.CIRCLE && previewOpRef.current) { previewOpRef.current.data.r = Math.hypot(x - previewOpRef.current.data.cx, y - previewOpRef.current.data.cy); }
+        }
+      } else if (e.type === "mouseup" || e.type === "mouseleave") {
+        if (drawingRef.current) {
+          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, true);
+          else if (previewOpRef.current) {
+            const op = { type: previewOpRef.current.type, data: previewOpRef.current.data };
+            emit('commit_op', op);
+            try {
+              historyRef.current.push({ opId: `${Date.now()}`, userId: 'self', type: op.type, data: op.data, timestamp: Date.now() });
+              scheduleRepaint();
+            } catch {}
+            previewOpRef.current = null;
+          }
+        }
+        drawingRef.current = false;
+      }
+    }, [handlePoint, trackCursor, tool, color, size, emit]
+  );
+
+  
+
+  const onTouch = useCallback(
+    (e) => {
+      const t = e.touches[0] || e.changedTouches[0];
+      const rect = canvasRef.current.getBoundingClientRect();
+      const x = t.clientX - rect.left;
+      const y = t.clientY - rect.top;
+      if (e.type === "touchstart") {
+        drawingRef.current = true;
+        if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) {
+          handlePoint(x, y, true, false);
+        } else if (tool === TOOLS.LINE) {
+          previewOpRef.current = { type: 'line', data: { color, width: size, x1: x, y1: y, x2: x, y2: y } };
+        } else if (tool === TOOLS.RECT) {
+          previewOpRef.current = { type: 'rect', data: { color, width: size, x, y, w: 0, h: 0 } };
+        } else if (tool === TOOLS.CIRCLE) {
+          previewOpRef.current = { type: 'circle', data: { color, width: size, cx: x, cy: y, r: 0 } };
+        }
+      } else if (e.type === "touchmove") {
+        trackCursor(x, y);
+        if (drawingRef.current) {
+          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, false);
+          else if (tool === TOOLS.LINE && previewOpRef.current) { previewOpRef.current.data.x2 = x; previewOpRef.current.data.y2 = y; }
+          else if (tool === TOOLS.RECT && previewOpRef.current) { previewOpRef.current.data.w = x - previewOpRef.current.data.x; previewOpRef.current.data.h = y - previewOpRef.current.data.y; }
+          else if (tool === TOOLS.CIRCLE && previewOpRef.current) { previewOpRef.current.data.r = Math.hypot(x - previewOpRef.current.data.cx, y - previewOpRef.current.data.cy); }
+        }
+      } else if (e.type === "touchend" || e.type === "touchcancel") {
+        if (drawingRef.current) {
+          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, true);
+          else if (previewOpRef.current) {
+            const op = { type: previewOpRef.current.type, data: previewOpRef.current.data };
+            emit('commit_op', op);
+            try {
+              historyRef.current.push({ opId: `${Date.now()}`, userId: 'self', type: op.type, data: op.data, timestamp: Date.now() });
+              scheduleRepaint();
+            } catch {}
+            previewOpRef.current = null;
+          }
+        }
+        drawingRef.current = false;
+      }
+    },
+    [handlePoint, trackCursor, tool, color, size, emit]
+  );
+
+  
+
+  // Move resize function before attach to fix temporal dead zone
+  const resize = useCallback(() => {
+    const canvas = canvasRef.current;
+    const buffer = bufferRef.current;
+    const parent = containerRef.current;
+    if (!canvas || !parent || !buffer) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = parent.clientWidth * dpr;
+    canvas.height = parent.clientHeight * dpr;
+    canvas.style.width = parent.clientWidth + "px";
+    canvas.style.height = parent.clientHeight + "px";
+    buffer.width = canvas.width;
+    buffer.height = canvas.height;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    const bctx = buffer.getContext("2d");
+    bctx.scale(dpr, dpr);
+    scheduleRepaint();
+  }, [canvasRef, bufferRef, containerRef, scheduleRepaint]);
+
+  const attach = useCallback(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    registerCanvas(c);
+    c.addEventListener("mousedown", onMouse);
+    c.addEventListener("mousemove", onMouse);
+    c.addEventListener("mouseup", onMouse);
+    c.addEventListener("mouseleave", onMouse);
+
+    c.addEventListener("touchstart", onTouch, { passive: true });
+    c.addEventListener("touchmove", onTouch, { passive: true });
+    c.addEventListener("touchend", onTouch);
+    c.addEventListener("touchcancel", onTouch);
+    return () => {
+      c.removeEventListener("mousedown", onMouse);
+      c.removeEventListener("mousemove", onMouse);
+      c.removeEventListener("mouseup", onMouse);
+      c.removeEventListener("mouseleave", onMouse);
+      c.removeEventListener("touchstart", onTouch);
+      c.removeEventListener("touchmove", onTouch);
+      c.removeEventListener("touchend", onTouch);
+      c.removeEventListener("touchcancel", onTouch);
+    };
+  }, [canvasRef, onMouse, onTouch, registerCanvas]);
+
   useEffect(() => {
     if (!socket) return;
     // bootstrap from localStorage before first server state lands
@@ -246,171 +428,6 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
       off2();
     };
   }, [socket, onRoomState, onDrawStroke, scheduleRepaint]);
-
-  const resize = useCallback(() => {
-    const canvas = canvasRef.current;
-    const buffer = bufferRef.current;
-    const parent = containerRef.current;
-    if (!canvas || !parent || !buffer) return;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = parent.clientWidth * dpr;
-    canvas.height = parent.clientHeight * dpr;
-    canvas.style.width = parent.clientWidth + "px";
-    canvas.style.height = parent.clientHeight + "px";
-    buffer.width = canvas.width;
-    buffer.height = canvas.height;
-    const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-    const bctx = buffer.getContext("2d");
-    bctx.scale(dpr, dpr);
-    scheduleRepaint();
-  }, [canvasRef, bufferRef, containerRef, scheduleRepaint]);
-
-  const emitThrottled = useRef(0);
-
-  const handlePoint = useCallback(
-    (x, y, isStart = false, isEnd = false) => {
-      // Only used for brush/eraser
-      const payload = { x, y, color, width: size, tool };
-      if (isStart) {
-        strokeIdRef.current = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        emit("start_stroke", payload);
-        liveStrokeRef.current = { tool, color, width: size, path: [{ x, y }] };
-        outBufferRef.current = [];
-      } else {
-        outBufferRef.current.push({ x, y });
-        const now = Date.now();
-        if (now - emitThrottled.current >= THROTTLE_MS || isEnd) {
-          emitThrottled.current = now;
-          const chunk = outBufferRef.current.splice(0, outBufferRef.current.length);
-          if (chunk.length) {
-            emit("draw_stroke", { pathChunk: chunk, color, width: size, tool });
-          }
-        }
-        if (liveStrokeRef.current) liveStrokeRef.current.path.push({ x, y });
-      }
-      if (isEnd) {
-        emit("end_stroke", { strokeId: strokeIdRef.current });
-        if (liveStrokeRef.current) {
-          historyRef.current.push({
-            opId: `${Date.now()}`,
-            userId: "self",
-            type: "stroke",
-            data: liveStrokeRef.current,
-            timestamp: Date.now(),
-          });
-          liveStrokeRef.current = null;
-        }
-      }
-      scheduleRepaint();
-    },
-    [emit, tool, color, size, scheduleRepaint]
-  );
-
-  const onMouse = useCallback(
-    (e) => {
-      const rect = canvasRef.current.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      if (e.type === "mousedown") {
-        drawingRef.current = true;
-        if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) {
-          handlePoint(x, y, true, false);
-        } else if (tool === TOOLS.LINE) {
-          previewOpRef.current = { type: 'line', data: { color, width: size, x1: x, y1: y, x2: x, y2: y } };
-        } else if (tool === TOOLS.RECT) {
-          previewOpRef.current = { type: 'rect', data: { color, width: size, x, y, w: 0, h: 0 } };
-        } else if (tool === TOOLS.CIRCLE) {
-          previewOpRef.current = { type: 'circle', data: { color, width: size, cx: x, cy: y, r: 0 } };
-        } else if (tool === TOOLS.TEXT) {
-          const text = prompt('Enter text');
-          if (text && text.trim()) {
-            emit('commit_op', { type: 'text', data: { text: text.trim(), x, y, color, size } });
-          }
-        }
-      } else if (e.type === "mousemove") {
-        trackCursor(x, y);
-        if (drawingRef.current) {
-          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, false);
-          else if (tool === TOOLS.LINE && previewOpRef.current) previewOpRef.current.data.x2 = x, previewOpRef.current.data.y2 = y;
-          else if (tool === TOOLS.RECT && previewOpRef.current) previewOpRef.current.data.w = x - previewOpRef.current.data.x, previewOpRef.current.data.h = y - previewOpRef.current.data.y;
-          else if (tool === TOOLS.CIRCLE && previewOpRef.current) previewOpRef.current.data.r = Math.hypot(x - previewOpRef.current.data.cx, y - previewOpRef.current.data.cy);
-        }
-      } else if (e.type === "mouseup" || e.type === "mouseleave") {
-        if (drawingRef.current) {
-          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, true);
-          else if (previewOpRef.current) {
-            emit('commit_op', { type: previewOpRef.current.type, data: previewOpRef.current.data });
-            previewOpRef.current = null;
-          }
-        }
-        drawingRef.current = false;
-      }
-    },
-    [handlePoint, trackCursor, tool, color, size, emit]
-  );
-
-  const onTouch = useCallback(
-    (e) => {
-      const t = e.touches[0] || e.changedTouches[0];
-      const rect = canvasRef.current.getBoundingClientRect();
-      const x = t.clientX - rect.left;
-      const y = t.clientY - rect.top;
-      if (e.type === "touchstart") {
-        drawingRef.current = true;
-        if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) {
-          handlePoint(x, y, true, false);
-        } else if (tool === TOOLS.LINE) {
-          previewOpRef.current = { type: 'line', data: { color, width: size, x1: x, y1: y, x2: x, y2: y } };
-        } else if (tool === TOOLS.RECT) {
-          previewOpRef.current = { type: 'rect', data: { color, width: size, x, y, w: 0, h: 0 } };
-        } else if (tool === TOOLS.CIRCLE) {
-          previewOpRef.current = { type: 'circle', data: { color, width: size, cx: x, cy: y, r: 0 } };
-        }
-      } else if (e.type === "touchmove") {
-        trackCursor(x, y);
-        if (drawingRef.current) {
-          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, false);
-          else if (tool === TOOLS.LINE && previewOpRef.current) previewOpRef.current.data.x2 = x, previewOpRef.current.data.y2 = y;
-          else if (tool === TOOLS.RECT && previewOpRef.current) previewOpRef.current.data.w = x - previewOpRef.current.data.x, previewOpRef.current.data.h = y - previewOpRef.current.data.y;
-          else if (tool === TOOLS.CIRCLE && previewOpRef.current) previewOpRef.current.data.r = Math.hypot(x - previewOpRef.current.data.cx, y - previewOpRef.current.data.cy);
-        }
-      } else if (e.type === "touchend" || e.type === "touchcancel") {
-        if (drawingRef.current) {
-          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, true);
-          else if (previewOpRef.current) { emit('commit_op', { type: previewOpRef.current.type, data: previewOpRef.current.data }); previewOpRef.current = null; }
-        }
-        drawingRef.current = false;
-      }
-    },
-    [handlePoint, trackCursor, tool, color, size, emit]
-  );
-
-  const attach = useCallback(() => {
-    const c = canvasRef.current;
-    if (!c) return;
-    registerCanvas(c);
-    c.addEventListener("mousedown", onMouse);
-    c.addEventListener("mousemove", onMouse);
-    c.addEventListener("mouseup", onMouse);
-    c.addEventListener("mouseleave", onMouse);
-
-    c.addEventListener("touchstart", onTouch, { passive: true });
-    c.addEventListener("touchmove", onTouch, { passive: true });
-    c.addEventListener("touchend", onTouch);
-    c.addEventListener("touchcancel", onTouch);
-    resize();
-    return () => {
-      c.removeEventListener("mousedown", onMouse);
-      c.removeEventListener("mousemove", onMouse);
-      c.removeEventListener("mouseup", onMouse);
-      c.removeEventListener("mouseleave", onMouse);
-      c.removeEventListener("touchstart", onTouch);
-      c.removeEventListener("touchmove", onTouch);
-      c.removeEventListener("touchend", onTouch);
-      c.removeEventListener("touchcancel", onTouch);
-    };
-  }, [canvasRef, onMouse, onTouch, registerCanvas, resize]);
 
   // Autosave every 5s
   useEffect(() => {

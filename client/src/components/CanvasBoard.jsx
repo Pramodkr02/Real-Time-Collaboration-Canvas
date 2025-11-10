@@ -8,6 +8,11 @@ export default function CanvasBoard() {
   const containerRef = useRef(null)
   const { attach, resize } = useCanvas({ canvasRef, bufferRef, containerRef })
 
+  // Initial resize when component mounts
+  useEffect(() => {
+    resize()
+  }, [resize])
+
   useEffect(() => {
     attach()
     const onResize = () => resize()

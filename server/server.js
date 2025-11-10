@@ -55,9 +55,13 @@ const app = express();
 app.use(cors());
 
 const authenticated = (req, res, next) => {
-  // In a real application, you would use a more robust authentication mechanism, such as tokens or sessions.
-  // For this example, we'll just check for the presence of a user object in the request.
-  if (req.user) {
+  // For this collaborative canvas app, we'll use a simple session-based authentication
+  // In production, you should use JWT tokens or similar
+  const token = req.headers.authorization || req.headers['x-access-token'];
+  const username = req.headers['x-username'];
+  
+  if (token || username) {
+    req.user = { username: username || 'anonymous' };
     next();
   } else {
     res.status(401).json({ message: 'Unauthorized' });
@@ -70,15 +74,26 @@ app.post('/register', (req, res) => {
 });
 
 app.post('/login', (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, username } = req.body;
 
-  // In a real application, you would validate the user's credentials against a database.
-  // For this example, we'll just check if the email and password are not empty.
+  // For this collaborative canvas app, we'll accept any non-empty username
+  // In production, you should validate against a database
   if (email && password) {
-    const user = { email };
-    res.json(user);
+    const user = { 
+      email, 
+      username: username || email.split('@')[0],
+      id: Math.random().toString(36).substr(2, 9)
+    };
+    res.json({ success: true, user });
+  } else if (username) {
+    // Allow login with just username for demo purposes
+    const user = { 
+      username: username.trim(),
+      id: Math.random().toString(36).substr(2, 9)
+    };
+    res.json({ success: true, user });
   } else {
-    res.status(401).json({ message: 'Invalid credentials' });
+    res.status(400).json({ message: 'Invalid credentials' });
   }
 });
 app.post('/logout', (req, res) => {
@@ -118,13 +133,14 @@ app.get('/health', (req, res) => {
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { 
-    origin: ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'], 
+    origin: ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://localhost:4173'], 
     methods: ['GET', 'POST'],
     credentials: true
   },
   transports: ['websocket', 'polling'],
   pingTimeout: 60000,
-  pingInterval: 25000
+  pingInterval: 25000,
+  allowEIO3: true
 });
 
 const rooms = new Map();
@@ -135,31 +151,37 @@ io.on('connection', (socket) => {
   let userInfo = null;
 
   socket.on('join_room', ({ roomId, username }) => {
-    const rid = roomId && String(roomId).trim() !== '' ? String(roomId) : 'default';
-    currentRoomId = rid;
+    try {
+      const rid = roomId && String(roomId).trim() !== '' ? String(roomId) : 'default';
+      currentRoomId = rid;
 
-    if (!rooms.has(rid)) {
-      rooms.set(rid, {
-        users: new Map(),
-        cursors: new Map(),
-        inProgress: new Map(), // userId -> { tool, color, width, path: [{x,y}] }
-        state: createDrawingState()
-      });
+      if (!rooms.has(rid)) {
+        rooms.set(rid, {
+          users: new Map(),
+          cursors: new Map(),
+          inProgress: new Map(), // userId -> { tool, color, width, path: [{x,y}] }
+          state: createDrawingState()
+        });
+      }
+
+      const room = rooms.get(rid);
+      const color = generateColor(room.users.size);
+      const name = username && username.trim() ? username.trim() : generateUsername();
+
+      userInfo = { userId: socket.id, username: name, color };
+
+      joinRoom(room, socket.id, userInfo);
+      socket.join(rid);
+
+      const payload = { ops: room.state.getState(), users: listUsers(room) };
+      socket.emit('room_state', payload);
+
+      io.to(rid).emit('update_users', { users: listUsers(room) });
+      console.log(`User ${name} joined room ${rid}`);
+    } catch (error) {
+      console.error('Error in join_room:', error);
+      socket.emit('error', { message: 'Failed to join room' });
     }
-
-    const room = rooms.get(rid);
-    const color = generateColor(room.users.size);
-    const name = username && username.trim() ? username.trim() : generateUsername();
-
-    userInfo = { userId: socket.id, username: name, color };
-
-    joinRoom(room, socket.id, userInfo);
-    socket.join(rid);
-
-    const payload = { ops: room.state.getState(), users: listUsers(room) };
-    socket.emit('room_state', payload);
-
-    io.to(rid).emit('update_users', { users: listUsers(room) });
   });
 
   socket.on('start_stroke', (data) => {

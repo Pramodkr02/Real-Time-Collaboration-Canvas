@@ -31,13 +31,25 @@ export function SocketProvider({ children, username, roomId }) {
 
   useEffect(() => {
     if (!username) return;
-    const s = io(SERVER_URL, {
-      transports: ["websocket", "polling"],
-      autoConnect: true,
-      timeout: 20000,
-      forceNew: true,
-    });
-    socketRef.current = s;
+    
+    console.log('Connecting to server:', SERVER_URL);
+    let s;
+    try {
+      s = io(SERVER_URL, {
+        transports: ["websocket", "polling"],
+        autoConnect: true,
+        timeout: 20000,
+        forceNew: true,
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+      });
+      socketRef.current = s;
+    } catch (err) {
+      console.error("Failed to initialize socket:", err);
+      setConnectionStatus("error");
+      return;
+    }
 
     s.on("connect", () => {
       console.log("Connected to server");
@@ -48,11 +60,28 @@ export function SocketProvider({ children, username, roomId }) {
     s.on("connect_error", (error) => {
       console.error("Connection error:", error);
       setConnectionStatus("disconnected");
+      // Try to reconnect after a delay
+      setTimeout(() => {
+        if (s.disconnected) {
+          console.log("Attempting to reconnect...");
+          s.connect();
+        }
+      }, 3000);
     });
 
     s.on("error", (error) => {
       console.error("Socket error:", error);
       setConnectionStatus("disconnected");
+    });
+
+    s.on("reconnect", (attemptNumber) => {
+      console.log("Reconnected after", attemptNumber, "attempts");
+      setConnectionStatus("connected");
+    });
+
+    s.on("reconnect_attempt", (attemptNumber) => {
+      console.log("Reconnection attempt", attemptNumber);
+      setConnectionStatus("connecting");
     });
 
     let pingTimer = setInterval(() => {
@@ -68,30 +97,42 @@ export function SocketProvider({ children, username, roomId }) {
     });
 
     s.on("room_state", ({ ops, users }) => {
-      setUsers(users);
-      selfRef.current = users.find((u) => u.userId === s.id) || null;
+      // Use setTimeout to avoid state updates during render
+      setTimeout(() => {
+        setUsers(users);
+        selfRef.current = users.find((u) => u.userId === s.id) || null;
+      }, 0);
     });
     s.on("update_users", ({ users }) => {
-      setUsers(users);
-      selfRef.current = users.find((u) => u.userId === s.id) || null;
+      // Use setTimeout to avoid state updates during render
+      setTimeout(() => {
+        setUsers(users);
+        selfRef.current = users.find((u) => u.userId === s.id) || null;
+      }, 0);
     });
     s.on("cursor_move", (p) => {
-      setCursors((prev) => {
-        const map = new Map(prev.map((c) => [c.userId, c]));
-        map.set(p.userId, p);
-        return Array.from(map.values());
-      });
+      // Use setTimeout to avoid state updates during render
+      setTimeout(() => {
+        setCursors((prev) => {
+          const map = new Map(prev.map((c) => [c.userId, c]));
+          map.set(p.userId, p);
+          return Array.from(map.values());
+        });
+      }, 0);
     });
     // track who is currently drawing (live strokes)
     s.on("draw_stroke", (d) => {
       try {
         const id = d.userId;
         if (!id) return;
-        if (d.end) {
-          setDrawingUsers((prev) => prev.filter((u) => u !== id));
-        } else {
-          setDrawingUsers((prev) => (prev.includes(id) ? prev : [...prev, id]));
-        }
+        // Use setTimeout to avoid state updates during render
+        setTimeout(() => {
+          if (d.end) {
+            setDrawingUsers((prev) => prev.filter((u) => u !== id));
+          } else {
+            setDrawingUsers((prev) => (prev.includes(id) ? prev : [...prev, id]));
+          }
+        }, 0);
       } catch (err) {
         console.warn("draw_stroke handler error", err);
       }
@@ -99,7 +140,9 @@ export function SocketProvider({ children, username, roomId }) {
 
     return () => {
       clearInterval(pingTimer);
-      s.disconnect();
+      if (s) {
+        s.disconnect();
+      }
     };
   }, [username, roomId]);
 
