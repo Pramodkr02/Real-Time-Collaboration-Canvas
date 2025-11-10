@@ -11,6 +11,9 @@ import "./styles/App.css";
 
 
 
+import Login from "./pages/Login";
+import Settings from "./pages/Settings";
+import History from "./pages/History";
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -34,29 +37,7 @@ export default function App() {
   }, [user, roomId]);
 
   if (!user) {
-    return (
-      <div className="h-screen w-screen flex items-center justify-center bg-slate-950">
-        <div className="bg-slate-900 p-8 rounded-lg border border-slate-800">
-          <h1 className="text-2xl font-bold mb-4">Collaborative Canvas</h1>
-          <div className="flex gap-2">
-            <input
-              defaultValue={localStorage.getItem("cc_username") || ""}
-              onChange={(e) => setUser({ username: e.target.value })}
-              onKeyDown={(e) => e.key === "Enter" && handleLogin(user?.username || "")}
-              placeholder="Enter username"
-              className="px-3 py-2 rounded bg-slate-800 border border-slate-700 outline-none focus:border-blue-500"
-              autoFocus
-            />
-            <button
-              onClick={() => handleLogin(user?.username || "")}
-              className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 font-medium"
-            >
-              Join
-            </button>
-          </div>
-        </div>
-      </div>
-    );
+    return <Login onSubmit={handleLogin} />;
   }
 
   return (
@@ -70,7 +51,7 @@ export default function App() {
 
 
 function AppContent() {
-  const { connectionStatus, username, roomId } = useSocket();
+  const { connectionStatus, username, roomId, users } = useSocket();
   const [currentPage, setCurrentPage] = useState("canvas");
 
   const ProfilePage = () => (
@@ -99,6 +80,10 @@ function AppContent() {
     switch (currentPage) {
       case "profile":
         return <ProfilePage />;
+      case "settings":
+        return <Settings />;
+      case "history":
+        return <History />;
       case "canvas":
       default:
         return <CanvasPage />;
@@ -126,11 +111,21 @@ function AppContent() {
               href="#"
               onClick={(e) => {
                 e.preventDefault();
-                setCurrentPage("profile");
+                setCurrentPage("settings");
               }}
               className="text-sm font-medium text-slate-300 hover:text-white"
             >
-              Profile
+              Settings
+            </a>
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                setCurrentPage("history");
+              }}
+              className="text-sm font-medium text-slate-300 hover:text-white"
+            >
+              History
             </a>
           </nav>
         </div>
@@ -151,6 +146,16 @@ function AppContent() {
               </span>
             </div>
           )}
+          <div className="flex -space-x-2 items-center">
+            {(users||[]).slice(0,5).map(u => (
+              <div key={u.userId} className="w-7 h-7 rounded-full border border-slate-800 text-[10px] font-semibold grid place-items-center" style={{ background: u.color||'#94a3b8', color: '#0f172a' }} title={u.username}>
+                {u.username?.slice(0,2).toUpperCase()}
+              </div>
+            ))}
+            {users && users.length>5 && (
+              <div className="w-7 h-7 rounded-full bg-slate-700 border border-slate-800 text-[10px] grid place-items-center">+{users.length-5}</div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -158,5 +163,6 @@ function AppContent() {
     </>
   );
 }
+
 
 

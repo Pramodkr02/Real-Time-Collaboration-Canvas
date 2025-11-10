@@ -140,6 +140,7 @@ export function SocketProvider({ children, username, roomId }) {
       cursors,
       latency,
       connectionStatus,
+      roomId,
       emit: (evt, data) =>
         socketRef.current && socketRef.current.emit(evt, data),
       undo: () =>

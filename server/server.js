@@ -48,23 +48,6 @@ dirs.forEach(dir => {
     fs.mkdirSync(dir, { recursive: true });
   }
 });
-import fs from 'fs';
-import path from 'path';
-
-const __dirname = path.resolve();
-
-const dirs = [
-  path.join(__dirname, 'server', 'models'),
-  path.join(__dirname, 'server', 'routes'),
-  path.join(__dirname, 'server', 'controllers'),
-  path.join(__dirname, 'server', 'middleware'),
-];
-
-dirs.forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-});
 
 const PORT = process.env.PORT || 3001;
 
@@ -212,6 +195,7 @@ io.on('connection', (socket) => {
     room.state.applyOp(op);
     room.inProgress.delete(socket.id);
     socket.to(currentRoomId).emit('draw_stroke', { userId: socket.id, end: true, ...stroke });
+    io.to(currentRoomId).emit('room_state', { ops: room.state.getState(), users: listUsers(room) });
   });
 
   socket.on('cursor_move', ({ x, y }) => {
@@ -244,6 +228,36 @@ io.on('connection', (socket) => {
     if (!room) return;
     room.state.clearCanvas(socket.id);
     io.to(currentRoomId).emit('room_state', { ops: room.state.getState(), users: listUsers(room) });
+  });
+
+  // Generic committed operations (shapes, text, image, etc.)
+  socket.on('commit_op', (payload) => {
+    const room = getRoom(rooms, currentRoomId);
+    if (!room) return;
+    try {
+      const now = Date.now();
+      const { type, data } = payload || {};
+      // Basic validation & limits
+      if (typeof type !== 'string') return;
+      if (type === 'stroke' && data && Array.isArray(data.path) && data.path.length > 5000) {
+        data.path = data.path.slice(0, 5000);
+      }
+      if (type === 'image' && data && typeof data.src === 'string' && data.src.length > 2_000_000) {
+        // limit 2MB dataURL
+        return;
+      }
+      const op = {
+        opId: `${now}-${Math.random().toString(36).slice(2, 8)}`,
+        userId: socket.id,
+        type,
+        data: data || {},
+        timestamp: now
+      };
+      room.state.applyOp(op);
+      io.to(currentRoomId).emit('room_state', { ops: room.state.getState(), users: listUsers(room) });
+    } catch (e) {
+      console.warn('commit_op rejected', e);
+    }
   });
 
   socket.on('disconnect', () => {

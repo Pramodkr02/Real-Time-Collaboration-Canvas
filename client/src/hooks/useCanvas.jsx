@@ -13,6 +13,7 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
     emit,
     registerCanvas,
     trackCursor,
+    roomId,
   } = useSocket();
   const drawingRef = useRef(false);
   const strokeIdRef = useRef(null);
@@ -21,6 +22,10 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
   const historyRef = useRef([]);
   const liveStrokeRef = useRef(null); // { tool, color, width, path: [{x,y}] }
   const remoteLiveRef = useRef(new Map()); // userId -> { tool, color, width, path: [] }
+  const imageCacheRef = useRef(new Map()); // src -> HTMLImageElement
+  const bootstrappedRef = useRef(false);
+  const previewOpRef = useRef(null); // { type, data } for shapes/text previews
+  const outBufferRef = useRef([]); // batched points for network
 
   const paintAll = useCallback(() => {
     const canvas = canvasRef.current;
@@ -37,7 +42,6 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
         bctx.clearRect(0, 0, buffer.width, buffer.height);
         return;
       }
-      // ignore legacy chunk ops; we now use 'stroke' only
       if (op.type === "stroke") {
         const { tool, color, width, path } = op.data;
         const target = ctx;
@@ -57,6 +61,51 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
           target.stroke();
         }
         target.restore();
+      } else if (op.type === "line") {
+        const { color, width, x1, y1, x2, y2 } = op.data;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.restore();
+      } else if (op.type === "rect") {
+        const { color, width, x, y, w, h } = op.data;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.strokeRect(x, y, w, h);
+        ctx.restore();
+      } else if (op.type === "circle") {
+        const { color, width, cx, cy, r } = op.data;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      } else if (op.type === "text") {
+        const { color, x, y, text, size = 18, font = 'Inter, system-ui, sans-serif' } = op.data;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.font = `${size}px ${font}`;
+        ctx.fillText(text || "", x, y);
+        ctx.restore();
+      } else if (op.type === "image") {
+        const { x, y, w, h, src } = op.data || {};
+        if (!src) return;
+        let img = imageCacheRef.current.get(src);
+        if (!img) {
+          img = new Image();
+          img.onload = () => scheduleRepaint();
+          img.src = src;
+          imageCacheRef.current.set(src, img);
+        }
+        if (img.complete) ctx.drawImage(img, x, y, w, h);
       }
     });
 
@@ -80,6 +129,25 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
         target.stroke();
       }
       target.restore();
+    }
+
+    // draw preview shape/text
+    if (previewOpRef.current) {
+      const op = previewOpRef.current;
+      if (op.type === 'line') {
+        const { color, width, x1, y1, x2, y2 } = op.data;
+        ctx.save();
+        ctx.setLineDash([6, 4]);
+        ctx.strokeStyle = color; ctx.lineWidth = width;
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        ctx.restore();
+      } else if (op.type === 'rect') {
+        const { color, width, x, y, w, h } = op.data;
+        ctx.save(); ctx.setLineDash([6,4]); ctx.strokeStyle=color; ctx.lineWidth=width; ctx.strokeRect(x,y,w,h); ctx.restore();
+      } else if (op.type === 'circle') {
+        const { color, width, cx, cy, r } = op.data;
+        ctx.save(); ctx.setLineDash([6,4]); ctx.strokeStyle=color; ctx.lineWidth=width; ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.stroke(); ctx.restore();
+      }
     }
 
     // draw live remote strokes
@@ -118,6 +186,18 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
 
   useEffect(() => {
     if (!socket) return;
+    // bootstrap from localStorage before first server state lands
+    if (!bootstrappedRef.current) {
+      try {
+        const key = `cc_ops_${roomId || 'default'}`;
+        const local = JSON.parse(localStorage.getItem(key) || '[]');
+        if (Array.isArray(local) && local.length) {
+          historyRef.current = local;
+          scheduleRepaint();
+        }
+      } catch {}
+      bootstrappedRef.current = true;
+    }
     const off1 = onRoomState(({ ops }) => {
       historyRef.current = ops;
       scheduleRepaint();
@@ -190,23 +270,22 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
 
   const handlePoint = useCallback(
     (x, y, isStart = false, isEnd = false) => {
+      // Only used for brush/eraser
       const payload = { x, y, color, width: size, tool };
       if (isStart) {
-        strokeIdRef.current = `${Date.now()}-${Math.random()
-          .toString(36)
-          .slice(2, 6)}`;
+        strokeIdRef.current = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         emit("start_stroke", payload);
         liveStrokeRef.current = { tool, color, width: size, path: [{ x, y }] };
+        outBufferRef.current = [];
       } else {
+        outBufferRef.current.push({ x, y });
         const now = Date.now();
         if (now - emitThrottled.current >= THROTTLE_MS || isEnd) {
           emitThrottled.current = now;
-          emit("draw_stroke", {
-            pathChunk: [{ x, y }],
-            color,
-            width: size,
-            tool,
-          });
+          const chunk = outBufferRef.current.splice(0, outBufferRef.current.length);
+          if (chunk.length) {
+            emit("draw_stroke", { pathChunk: chunk, color, width: size, tool });
+          }
         }
         if (liveStrokeRef.current) liveStrokeRef.current.path.push({ x, y });
       }
@@ -235,16 +314,40 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
       const y = e.clientY - rect.top;
       if (e.type === "mousedown") {
         drawingRef.current = true;
-        handlePoint(x, y, true, false);
+        if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) {
+          handlePoint(x, y, true, false);
+        } else if (tool === TOOLS.LINE) {
+          previewOpRef.current = { type: 'line', data: { color, width: size, x1: x, y1: y, x2: x, y2: y } };
+        } else if (tool === TOOLS.RECT) {
+          previewOpRef.current = { type: 'rect', data: { color, width: size, x, y, w: 0, h: 0 } };
+        } else if (tool === TOOLS.CIRCLE) {
+          previewOpRef.current = { type: 'circle', data: { color, width: size, cx: x, cy: y, r: 0 } };
+        } else if (tool === TOOLS.TEXT) {
+          const text = prompt('Enter text');
+          if (text && text.trim()) {
+            emit('commit_op', { type: 'text', data: { text: text.trim(), x, y, color, size } });
+          }
+        }
       } else if (e.type === "mousemove") {
         trackCursor(x, y);
-        if (drawingRef.current) handlePoint(x, y, false, false);
+        if (drawingRef.current) {
+          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, false);
+          else if (tool === TOOLS.LINE && previewOpRef.current) previewOpRef.current.data.x2 = x, previewOpRef.current.data.y2 = y;
+          else if (tool === TOOLS.RECT && previewOpRef.current) previewOpRef.current.data.w = x - previewOpRef.current.data.x, previewOpRef.current.data.h = y - previewOpRef.current.data.y;
+          else if (tool === TOOLS.CIRCLE && previewOpRef.current) previewOpRef.current.data.r = Math.hypot(x - previewOpRef.current.data.cx, y - previewOpRef.current.data.cy);
+        }
       } else if (e.type === "mouseup" || e.type === "mouseleave") {
-        if (drawingRef.current) handlePoint(x, y, false, true);
+        if (drawingRef.current) {
+          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, true);
+          else if (previewOpRef.current) {
+            emit('commit_op', { type: previewOpRef.current.type, data: previewOpRef.current.data });
+            previewOpRef.current = null;
+          }
+        }
         drawingRef.current = false;
       }
     },
-    [handlePoint, trackCursor]
+    [handlePoint, trackCursor, tool, color, size, emit]
   );
 
   const onTouch = useCallback(
@@ -255,16 +358,32 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
       const y = t.clientY - rect.top;
       if (e.type === "touchstart") {
         drawingRef.current = true;
-        handlePoint(x, y, true, false);
+        if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) {
+          handlePoint(x, y, true, false);
+        } else if (tool === TOOLS.LINE) {
+          previewOpRef.current = { type: 'line', data: { color, width: size, x1: x, y1: y, x2: x, y2: y } };
+        } else if (tool === TOOLS.RECT) {
+          previewOpRef.current = { type: 'rect', data: { color, width: size, x, y, w: 0, h: 0 } };
+        } else if (tool === TOOLS.CIRCLE) {
+          previewOpRef.current = { type: 'circle', data: { color, width: size, cx: x, cy: y, r: 0 } };
+        }
       } else if (e.type === "touchmove") {
         trackCursor(x, y);
-        if (drawingRef.current) handlePoint(x, y, false, false);
+        if (drawingRef.current) {
+          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, false);
+          else if (tool === TOOLS.LINE && previewOpRef.current) previewOpRef.current.data.x2 = x, previewOpRef.current.data.y2 = y;
+          else if (tool === TOOLS.RECT && previewOpRef.current) previewOpRef.current.data.w = x - previewOpRef.current.data.x, previewOpRef.current.data.h = y - previewOpRef.current.data.y;
+          else if (tool === TOOLS.CIRCLE && previewOpRef.current) previewOpRef.current.data.r = Math.hypot(x - previewOpRef.current.data.cx, y - previewOpRef.current.data.cy);
+        }
       } else if (e.type === "touchend" || e.type === "touchcancel") {
-        if (drawingRef.current) handlePoint(x, y, false, true);
+        if (drawingRef.current) {
+          if (tool === TOOLS.BRUSH || tool === TOOLS.ERASER) handlePoint(x, y, false, true);
+          else if (previewOpRef.current) { emit('commit_op', { type: previewOpRef.current.type, data: previewOpRef.current.data }); previewOpRef.current = null; }
+        }
         drawingRef.current = false;
       }
     },
-    [handlePoint, trackCursor]
+    [handlePoint, trackCursor, tool, color, size, emit]
   );
 
   const attach = useCallback(() => {
@@ -292,6 +411,17 @@ export default function useCanvas({ canvasRef, bufferRef, containerRef }) {
       c.removeEventListener("touchcancel", onTouch);
     };
   }, [canvasRef, onMouse, onTouch, registerCanvas, resize]);
+
+  // Autosave every 5s
+  useEffect(() => {
+    const id = setInterval(() => {
+      try {
+        const key = `cc_ops_${roomId || 'default'}`;
+        localStorage.setItem(key, JSON.stringify(historyRef.current));
+      } catch {}
+    }, 5000);
+    return () => clearInterval(id);
+  }, [roomId]);
 
   return { attach, resize };
 }
