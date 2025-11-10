@@ -4,3 +4,77 @@
 .toolbar-button-group { display: flex; gap: 0.5rem; }
 .toolbar-input-group { margin-bottom: 0.75rem; }
 .toolbar-latency { font-size: 0.75rem; color: #94a3b8; margin-top: 0.5rem; }
+
+/* Shapes Popup Styles */
+.shapes-popup {
+  position: absolute;
+  z-index: 1000;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 0.5rem;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+  min-width: 280px;
+}
+
+.shapes-section {
+  margin-bottom: 1rem;
+}
+
+.shapes-section:last-child {
+  margin-bottom: 0;
+}
+
+.shapes-section h4 {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.shapes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem;
+}
+
+.shape-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: #334155;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.shape-btn:hover {
+  background: #475569;
+  border-color: #64748b;
+}
+
+.shape-btn.active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: white;
+}
+
+.shape-icon {
+  font-size: 1rem;
+}
+
+.shape-name {
+  font-size: 0.7rem;
+}
+
+.shapes-main-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  justify-content: center;
+}
