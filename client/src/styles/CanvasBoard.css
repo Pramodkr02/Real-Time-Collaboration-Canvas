@@ -1,0 +1,4 @@
+.canvas{touch-action:none;cursor:crosshair}
+canvas{display:block;background:#ffffff;border-radius:0;box-shadow:inset 0 0 0 1px #e2e8f0}
+canvas:active{cursor:crosshair}
+@media (max-width: 768px){canvas{cursor:none}}

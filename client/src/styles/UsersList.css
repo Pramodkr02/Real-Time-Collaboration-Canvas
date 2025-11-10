@@ -1,0 +1,5 @@
+.users-list { list-style: none; margin: 0; padding: 0; }
+.users-list li { padding: 4px 0; display: flex; align-items: center; gap: 8px; font-size: 0.875rem; }
+.users-list li.font-semibold { font-weight: 600; color: #e2e8f0; }
+.user-indicator { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.user-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
